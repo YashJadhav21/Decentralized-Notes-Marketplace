@@ -285,40 +285,7 @@
   }
 }
 
-/* Dark Mode Support */
-@media (prefers-color-scheme: dark) {
-  .input {
-    background: #292524;
-    border-color: #44403C;
-    color: #F5F5F4;
-  }
-  
-  .input::placeholder {
-    color: #78716C;
-  }
-  
-  .filled .input {
-    background: #1C1917;
-  }
-  
-  .label {
-    color: #D6D3D1;
-  }
-  
-  .helperText {
-    color: #A8A29E;
-  }
-  
-  .disabled .input {
-    background: #1C1917;
-    border-color: #292524;
-    color: #78716C;
-  }
-  
-  .floating .label {
-    background: #292524;
-  }
-}
+
 
 /* Animation for better UX */
 .input:invalid {

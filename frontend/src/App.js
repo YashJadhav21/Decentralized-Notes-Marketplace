@@ -397,11 +397,11 @@ function DemoApp() {
   const renderCurrentPage = () => {
     switch (currentPage) {
       case 'browse':
-        return <BrowsePage contract={contract} account={state.account} />;
+        return <BrowsePage contract={contract} account={state.account} onNavigate={setCurrentPage} />;
       case 'create':
-        return <CreatePage contract={contract} account={state.account} />;
+        return <CreatePage contract={contract} account={state.account} onNavigate={setCurrentPage} />;
       case 'my-notes':
-        return <UserProfile addNotification={addNotification} />;
+        return <UserProfile addNotification={addNotification} onNavigate={setCurrentPage} />;
       case 'test':
         return (
           <div>
@@ -438,6 +438,7 @@ function DemoApp() {
         currentPage={currentPage}
         onPageChange={setCurrentPage}
         isConnected={state.isConnected}
+        account={state.account}
         onConnect={handleConnectWallet}
       />
       

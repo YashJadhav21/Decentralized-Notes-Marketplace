@@ -1,24 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { notesContract } from '../contractConnection';
+import { useWeb3 } from '../contexts/Web3Context';
 
 const CreateNoteTestComponent = () => {
-  const [isConnected, setIsConnected] = useState(false);
-  const [userAddress, setUserAddress] = useState('');
+  const { state: web3State, connectWallet } = useWeb3();
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState('');
 
-  useEffect(() => {
-    checkConnection();
-  }, []);
+  const isConnected = web3State.isConnected;
+  const userAddress = web3State.account || '';
 
   const checkConnection = async () => {
     try {
-      const connected = await notesContract.connect();
-      if (connected) {
-        setIsConnected(true);
-        const address = await notesContract.getCurrentUser();
-        setUserAddress(address);
+      if (!web3State.isConnected) {
+        await connectWallet();
       }
+      await notesContract.connect();
     } catch (error) {
       console.error('Connection failed:', error);
     }

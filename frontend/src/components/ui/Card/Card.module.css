@@ -187,32 +187,6 @@
   }
 }
 
-/* Dark mode support */
-@media (prefers-color-scheme: dark) {
-  .default,
-  .elevated,
-  .outlined,
-  .filled {
-    background: #292524;
-    border-color: #44403C;
-    color: #F5F5F4;
-  }
-  
-  .filled {
-    background: #1C1917;
-  }
-  
-  .gradient {
-    background: linear-gradient(135deg, #1E268F 0%, #064E3B 100%);
-    border-color: rgba(59, 91, 255, 0.2);
-  }
-  
-  .header,
-  .footer {
-    border-color: #44403C;
-  }
-}
-
 /* Loading State */
 .loading {
   position: relative;

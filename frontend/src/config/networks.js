@@ -20,7 +20,7 @@ export const SUPPORTED_NETWORKS = {
     chainIdHex: '0xaa36a7',
     name: 'sepolia',
     displayName: 'Sepolia Testnet',
-    rpcUrl: 'https://sepolia.infura.io/v3/84842078b09946638c03157f83405213',
+    rpcUrl: 'https://ethereum-sepolia-rpc.publicnode.com',
     blockExplorer: 'https://sepolia.etherscan.io',
     currency: {
       name: 'Ethereum',

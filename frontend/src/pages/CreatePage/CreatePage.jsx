@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import styles from './CreatePage.module.css';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -7,7 +7,7 @@ import Header from '../../components/layout/Header';
 import IPFSFileUpload from '../../components/IPFSFileUpload';
 import { notesContract } from '../../contractConnection';
 
-const CreatePage = ({ contract, account }) => {
+const CreatePage = ({ contract, account, onNavigate }) => {
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -18,6 +18,80 @@ const CreatePage = ({ contract, account }) => {
   const [loading, setLoading] = useState(false);
   const [uploadedFile, setUploadedFile] = useState(null);
   const [notification, setNotification] = useState(null);
+  const [lastCreatedNote, setLastCreatedNote] = useState(null);
+  const [existingNotes, setExistingNotes] = useState([]);
+  const [copyrightViolation, setCopyrightViolation] = useState(null);
+
+  // Pre-load all notes currently on the blockchain
+  const loadExistingNotes = useCallback(async () => {
+    try {
+      const notes = await notesContract.getAllNotes();
+      setExistingNotes(notes || []);
+    } catch (err) {
+      console.warn('Could not preload existing notes for copyright check:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadExistingNotes();
+  }, [loadExistingNotes, account]);
+
+  // Run real-time copyright & duplicate check whenever file or title changes
+  useEffect(() => {
+    const checkCopyright = async () => {
+      if (!existingNotes || existingNotes.length === 0) {
+        setCopyrightViolation(null);
+        return;
+      }
+
+      const fileHash = uploadedFile?.hash ? uploadedFile.hash.trim().toLowerCase() : '';
+      const inputTitle = formData.title ? formData.title.trim().toLowerCase() : '';
+
+      if (!fileHash && !inputTitle) {
+        setCopyrightViolation(null);
+        return;
+      }
+
+      // Check if file hash or title matches any existing on-chain note
+      const matched = existingNotes.find(n => {
+        if (!n) return false;
+        const noteHash = n.ipfsHash ? n.ipfsHash.trim().toLowerCase() : '';
+        const noteTitle = n.title ? n.title.trim().toLowerCase() : '';
+
+        const hashMatch = fileHash && noteHash && noteHash === fileHash;
+        const titleMatch = inputTitle && noteTitle && noteTitle === inputTitle;
+        return hashMatch || titleMatch;
+      });
+
+      if (matched) {
+        const userAddress = (account || '').toLowerCase();
+        const isOwn = matched.author && matched.author.toLowerCase() === userAddress;
+        let isPurchased = false;
+
+        if (userAddress && !isOwn) {
+          try {
+            isPurchased = await notesContract.hasUserPurchased(userAddress, matched.id);
+          } catch (e) {
+            console.warn('hasUserPurchased check error:', e);
+          }
+        }
+
+        const isFileMatch = Boolean(fileHash && matched.ipfsHash && matched.ipfsHash.trim().toLowerCase() === fileHash);
+
+        setCopyrightViolation({
+          isDuplicate: true,
+          note: matched,
+          isOwn,
+          isPurchased,
+          matchType: isFileMatch ? 'file' : 'title'
+        });
+      } else {
+        setCopyrightViolation(null);
+      }
+    };
+
+    checkCopyright();
+  }, [uploadedFile, formData.title, existingNotes, account]);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -34,11 +108,32 @@ const CreatePage = ({ contract, account }) => {
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
-    setTimeout(() => setNotification(null), 5000);
+    setTimeout(() => setNotification(null), 6000);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    // Strict Copyright & Duplicate Check
+    if (copyrightViolation && copyrightViolation.isDuplicate) {
+      if (copyrightViolation.isPurchased) {
+        showNotification(
+          `🚨 Copyright Violation: You purchased this note ("${copyrightViolation.note.title}") from author ${copyrightViolation.note.author.slice(0,6)}...${copyrightViolation.note.author.slice(-4)}. Re-uploading or reselling other creators' study materials is strictly prohibited!`,
+          'error'
+        );
+      } else if (copyrightViolation.isOwn) {
+        showNotification(
+          `⚠️ Duplicate Note: You have already uploaded note #${copyrightViolation.note.id} ("${copyrightViolation.note.title}").`,
+          'warning'
+        );
+      } else {
+        showNotification(
+          `🚨 Copyright Infringement: This note has already been registered on the blockchain by original author ${copyrightViolation.note.author.slice(0,6)}...${copyrightViolation.note.author.slice(-4)} (Note #${copyrightViolation.note.id}).`,
+          'error'
+        );
+      }
+      return;
+    }
     
     if (!formData.title || !formData.description || !formData.subject) {
       showNotification('Please fill in all required fields', 'error');
@@ -114,8 +209,15 @@ const CreatePage = ({ contract, account }) => {
       showNotification('Transaction submitted to blockchain...', 'info');
       console.log('⏳ Transaction submitted:', receipt.hash);
       
+      setLastCreatedNote({
+        txHash: receipt.hash,
+        title: formData.title,
+        ipfsHash: ipfsHash,
+        price: formData.price
+      });
+
       showNotification(
-        `🎉 Note created successfully! ${uploadedFile ? 'File is permanently stored on IPFS.' : 'Text note created.'} Transaction: ${receipt.hash.slice(0, 10)}...`,
+        `🎉 Note created successfully! Transaction: ${receipt.hash.slice(0, 10)}...`,
         'success'
       );
       
@@ -156,6 +258,53 @@ const CreatePage = ({ contract, account }) => {
         subtitle="Share your knowledge and earn from your notes"
       />
 
+      {lastCreatedNote && (
+        <Card style={{ marginBottom: '20px', border: '2px solid #10b981', backgroundColor: '#f0fdf4', padding: '16px' }}>
+          <div>
+            <h3 style={{ color: '#065f46', margin: '0 0 8px 0' }}>
+              🎉 Note "{lastCreatedNote.title}" Successfully Minted on Blockchain!
+            </h3>
+            <p style={{ color: '#047857', margin: '0 0 12px 0', fontSize: '0.95rem' }}>
+              Your note has been minted as an NFT on Ethereum Sepolia. You can find it under the <strong>📚 Browse Notes</strong> tab in the marketplace, or in <strong>📝 My Notes</strong>.
+            </p>
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center', marginTop: '12px' }}>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => onNavigate ? onNavigate('browse') : null}
+              >
+                📚 View in Browse Notes
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => onNavigate ? onNavigate('my-notes') : null}
+              >
+                📝 View in My Notes
+              </Button>
+              <a 
+                href={`https://sepolia.etherscan.io/tx/${lastCreatedNote.txHash}`} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                style={{ color: '#2563eb', fontWeight: 'bold', textDecoration: 'underline', fontSize: '0.9rem', marginLeft: '6px' }}
+              >
+                🔍 Sepolia Etherscan
+              </a>
+              {lastCreatedNote.ipfsHash && (
+                <a 
+                  href={`https://gateway.pinata.cloud/ipfs/${lastCreatedNote.ipfsHash}`} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  style={{ color: '#059669', fontWeight: 'bold', textDecoration: 'underline', fontSize: '0.9rem', marginLeft: '6px' }}
+                >
+                  📁 IPFS File
+                </a>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
       {notification && (
         <div className={`${styles.notification} ${styles[notification.type]}`}>
           <span className={styles.notificationIcon}>
@@ -171,6 +320,65 @@ const CreatePage = ({ contract, account }) => {
             ✕
           </button>
         </div>
+      )}
+
+      {copyrightViolation && copyrightViolation.isDuplicate && (
+        <Card style={{
+          marginBottom: '20px',
+          border: '2px solid #ef4444',
+          backgroundColor: '#fef2f2',
+          padding: '20px',
+          borderRadius: '12px',
+          boxShadow: '0 4px 12px rgba(239, 68, 68, 0.15)'
+        }}>
+          <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+            <span style={{ fontSize: '2rem' }}>🚨</span>
+            <div style={{ flex: 1 }}>
+              <h3 style={{ color: '#991b1b', margin: '0 0 8px 0', fontSize: '1.2rem', fontWeight: 'bold' }}>
+                {copyrightViolation.isPurchased 
+                  ? '⚠️ Copyright Violation: Re-uploading Purchased Note Prohibited'
+                  : copyrightViolation.isOwn 
+                    ? '⚠️ Duplicate Note: You Have Already Uploaded This Note' 
+                    : '🚨 Copyright Infringement: Note Already Registered on Blockchain'}
+              </h3>
+              <p style={{ color: '#b91c1c', margin: '0 0 12px 0', fontSize: '0.95rem', lineHeight: '1.5' }}>
+                {copyrightViolation.isPurchased ? (
+                  <>
+                    You purchased and downloaded this study material (<strong>"{copyrightViolation.note.title}"</strong>) from original creator <code>{copyrightViolation.note.author.slice(0,6)}...{copyrightViolation.note.author.slice(-4)}</code>. Re-uploading or claiming other creators' intellectual property is strictly prohibited by academic integrity rules.
+                  </>
+                ) : copyrightViolation.isOwn ? (
+                  <>
+                    You have already uploaded this exact document as Note #{copyrightViolation.note.id} (<strong>"{copyrightViolation.note.title}"</strong>). You cannot re-upload duplicate notes.
+                  </>
+                ) : (
+                  <>
+                    This document is already registered on the blockchain by original author <code>{copyrightViolation.note.author.slice(0,6)}...{copyrightViolation.note.author.slice(-4)}</code> (Note #{copyrightViolation.note.id}: <strong>"{copyrightViolation.note.title}"</strong>). Duplicate uploads of copyrighted content are blocked.
+                  </>
+                )}
+              </p>
+              <div style={{
+                background: '#fee2e2',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                fontSize: '0.85rem',
+                color: '#7f1d1d',
+                fontFamily: 'monospace',
+                border: '1px solid #fca5a5',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px'
+              }}>
+                <div><strong>Token ID:</strong> #{copyrightViolation.note.id}</div>
+                <div><strong>Original Title:</strong> "{copyrightViolation.note.title}"</div>
+                <div><strong>Original Author:</strong> {copyrightViolation.note.author}</div>
+                {copyrightViolation.note.ipfsHash && (
+                  <div><strong>IPFS Hash:</strong> {copyrightViolation.note.ipfsHash}</div>
+                )}
+                <div><strong>Violation Reason:</strong> {copyrightViolation.isPurchased ? 'Attempted re-upload of purchased material' : 'Duplicate document CID match'}</div>
+              </div>
+            </div>
+          </div>
+        </Card>
       )}
 
       <div className={styles.content}>
@@ -280,14 +488,26 @@ const CreatePage = ({ contract, account }) => {
                 type="submit"
                 variant="primary"
                 size="lg"
-                disabled={loading}
+                disabled={loading || (copyrightViolation && copyrightViolation.isDuplicate)}
                 className={styles.submitButton}
+                style={copyrightViolation?.isDuplicate ? {
+                  backgroundColor: '#ef4444',
+                  borderColor: '#dc2626',
+                  cursor: 'not-allowed',
+                  opacity: 0.85
+                } : {}}
               >
-                {loading ? '🔄 Creating on Blockchain...' : '✨ Create Note NFT'}
+                {loading 
+                  ? '🔄 Creating on Blockchain...' 
+                  : (copyrightViolation && copyrightViolation.isDuplicate)
+                    ? '🚫 Upload Blocked (Copyright Violation)' 
+                    : '✨ Create Note NFT'}
               </Button>
               
               <p className={styles.helperText}>
-                ℹ️ Make sure MetaMask is connected and you're on Sepolia testnet
+                {copyrightViolation?.isDuplicate 
+                  ? '⚠️ Submission disabled because this note is already registered or was purchased by your wallet.' 
+                  : "ℹ️ Make sure MetaMask is connected and you're on Sepolia testnet"}
               </p>
             </div>
           </form>

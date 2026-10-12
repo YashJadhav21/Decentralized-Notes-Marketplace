@@ -3,26 +3,9 @@ import { ethers } from 'ethers';
 import { useWeb3 } from '../contexts/Web3Context';
 import { Note, ContractState } from '../types';
 
-// You'll need to replace this with your actual contract ABI
-const CONTRACT_ABI = [
-  // Updated to match your deployed contract
-  "function createNote(string memory title, string memory description, string memory ipfsHash, uint256 price, string memory subject, string memory metadataURI) external returns (uint256)",
-  "function purchaseNote(uint256 tokenId) external payable",
-  "function rateNote(uint256 tokenId, uint8 rating) external",
-  "function updatePrice(uint256 tokenId, uint256 newPrice) external",
-  "function updateSaleStatus(uint256 tokenId, bool forSale) external",
-  "function withdrawEarnings() external",
-  "function getNotesByAuthor(address author) external view returns (uint256[] memory)",
-  "function getNotesBySubject(string memory subject) external view returns (uint256[] memory)",
-  "function getUserPurchases(address user) external view returns (uint256[] memory)",
-  "function getTotalNotes() external view returns (uint256)",
-  "function hasUserPurchased(address user, uint256 tokenId) external view returns (bool)",
-  "function notes(uint256) external view returns (uint256 id, string memory title, string memory description, string memory ipfsHash, address author, uint256 price, bool forSale, uint256 createdAt, string memory subject, uint8 rating, uint256 ratingCount, uint256 totalRating, uint256 downloadCount)",
-  "function authorEarnings(address) external view returns (uint256)",
-  "function userProfiles(address) external view returns (string memory name, string memory bio, bool verified, uint256 totalEarnings, uint256 notesCreated, uint8 reputation)"
-];
+import CONTRACT_ABI from '../contracts/NotesMarketplaceABI.json';
 
-const CONTRACT_ADDRESS = process.env.REACT_APP_CONTRACT_ADDRESS || '';
+const CONTRACT_ADDRESS = process.env.REACT_APP_CONTRACT_ADDRESS || '0x1153027c523EA4cCb0277c0eBAD03707579D3360';
 
 export function useNotesContract() {
   const { state: web3State, addTransaction, updateTransaction } = useWeb3();
@@ -82,6 +65,38 @@ export function useNotesContract() {
     }
 
     try {
+      // Pre-flight duplicate / copyright check
+      try {
+        const { notesContract } = await import('../contractConnection');
+        const allNotes = await notesContract.getAllNotes();
+        const userAddress = (web3State.account || '').toLowerCase();
+        const duplicate = allNotes.find((n: any) => {
+          if (!n) return false;
+          const hashMatch = n.ipfsHash && ipfsHash && n.ipfsHash.trim().toLowerCase() === ipfsHash.trim().toLowerCase();
+          const titleMatch = n.title && title && n.title.trim().toLowerCase() === title.trim().toLowerCase();
+          return hashMatch || titleMatch;
+        });
+
+        if (duplicate) {
+          const isOwn = duplicate.author && duplicate.author.toLowerCase() === userAddress;
+          if (isOwn) {
+            throw new Error(`⚠️ Duplicate Note: You have already uploaded note #${duplicate.id} ("${duplicate.title}").`);
+          } else {
+            const hasBought = await notesContract.hasUserPurchased(userAddress, duplicate.id);
+            if (hasBought) {
+              throw new Error(`🚨 Copyright Violation: You purchased this note ("${duplicate.title}") from author ${duplicate.author.slice(0,6)}...${duplicate.author.slice(-4)}. Re-uploading or reselling other creators' study materials is strictly prohibited!`);
+            } else {
+              throw new Error(`🚨 Copyright Infringement: This note has already been registered on the blockchain by author ${duplicate.author.slice(0,6)}...${duplicate.author.slice(-4)} (Note #${duplicate.id}).`);
+            }
+          }
+        }
+      } catch (checkErr: any) {
+        if (checkErr.message.includes('Copyright') || checkErr.message.includes('Duplicate')) {
+          throw checkErr;
+        }
+        console.warn('Pre-flight copyright check skipped:', checkErr);
+      }
+
       const priceInWei = ethers.parseEther(price);
       
       // Create metadata URI for the 6th parameter
@@ -291,154 +306,190 @@ export function useNotesContract() {
     }
   }, [contractState.contract, addTransaction, updateTransaction]);
 
-  const getAllNotes = useCallback(async (): Promise<Note[]> => {
-    if (!contractState.contract) {
-      throw new Error('Contract not initialized');
-    }
-
+  const getReadContract = useCallback(() => {
+    if (contractState.contract) return contractState.contract;
     try {
-      const totalNotes = await contractState.contract.getTotalNotes();
-      const notes: Note[] = [];
-
-      for (let i = 0; i < totalNotes; i++) {
-        try {
-          const noteData = await contractState.contract.notes(i);
-          const note: Note = {
-            id: Number(noteData.id),
-            title: noteData.title,
-            description: noteData.description,
-            ipfsHash: noteData.ipfsHash,
-            author: noteData.author,
-            price: ethers.formatEther(noteData.price),
-            forSale: noteData.forSale,
-            createdAt: Number(noteData.createdAt),
-            subject: noteData.subject,
-            rating: Number(noteData.rating),
-            ratingCount: Number(noteData.ratingCount),
-            totalRating: Number(noteData.totalRating),
-            downloadCount: Number(noteData.downloadCount),
-          };
-          notes.push(note);
-        } catch (error) {
-          console.warn(`Failed to fetch note ${i}:`, error);
-        }
-      }
-
-      return notes;
-    } catch (error) {
-      throw error;
+      const provider = (typeof window !== 'undefined' && window.ethereum)
+        ? new ethers.BrowserProvider(window.ethereum)
+        : new ethers.JsonRpcProvider('https://ethereum-sepolia-rpc.publicnode.com');
+      return new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
+    } catch {
+      return null;
     }
   }, [contractState.contract]);
 
+  const formatNoteFromContract = (noteData: any, tokenId?: string | number | bigint): Note => ({
+    id: tokenId !== undefined ? Number(tokenId) : Number(noteData.id !== undefined ? noteData.id : 0),
+    title: noteData.title !== undefined ? noteData.title : (noteData[0] || ''),
+    description: noteData.description !== undefined ? noteData.description : (noteData[1] || ''),
+    ipfsHash: noteData.ipfsHash !== undefined ? noteData.ipfsHash : (noteData[2] || ''),
+    author: noteData.author !== undefined ? noteData.author : (noteData[3] || ''),
+    price: ethers.formatEther(noteData.price !== undefined ? noteData.price : (noteData[4] || 0)),
+    forSale: Boolean(noteData.forSale !== undefined ? noteData.forSale : noteData[5]),
+    createdAt: Number(noteData.createdAt !== undefined ? noteData.createdAt : (noteData[6] || 0)),
+    subject: noteData.subject !== undefined ? noteData.subject : (noteData[7] || ''),
+    rating: Number(noteData.rating !== undefined ? noteData.rating : (noteData[8] || 0)),
+    ratingCount: Number(noteData.ratingCount !== undefined ? noteData.ratingCount : (noteData[9] || 0)),
+    totalRating: Number(noteData.totalRating !== undefined ? noteData.totalRating : (noteData[10] || 0)),
+    downloadCount: Number(noteData.downloadCount !== undefined ? noteData.downloadCount : (noteData[11] || 0)),
+  });
+
+  const getAllNotes = useCallback(async (): Promise<Note[]> => {
+    const contract = contractState.contract || getReadContract();
+    if (!contract) {
+      throw new Error('Contract not available');
+    }
+
+    try {
+      const rawIds = await contract.getAllNotes();
+      const tokenIds = Array.from(rawIds).map((id: any) => BigInt(id.toString()));
+      const notes: Note[] = [];
+
+      try {
+        const rawNotes = await contract.getMultipleNotes(tokenIds);
+        return Array.from(rawNotes).map((noteData: any, idx: number) => 
+          formatNoteFromContract(noteData, tokenIds[idx])
+        );
+      } catch (err) {
+        console.warn('getMultipleNotes failed, fetching individually:', err);
+        for (const id of tokenIds) {
+          try {
+            const noteData = await contract.notes(id);
+            notes.push(formatNoteFromContract(noteData, id));
+          } catch (error) {
+            console.warn(`Failed to fetch note ${id}:`, error);
+          }
+        }
+        return notes;
+      }
+    } catch (error) {
+      console.error('Failed to get all notes:', error);
+      return [];
+    }
+  }, [contractState.contract, getReadContract]);
+
   const getUserNotes = useCallback(async (userAddress?: string): Promise<Note[]> => {
-    if (!contractState.contract) {
-      throw new Error('Contract not initialized');
+    const contract = contractState.contract || getReadContract();
+    if (!contract) {
+      throw new Error('Contract not available');
     }
 
     const address = userAddress || web3State.account;
     if (!address) {
-      throw new Error('No user address provided');
+      return [];
     }
 
     try {
-      const noteIds = await contractState.contract.getNotesByAuthor(address);
-      const notes: Note[] = [];
-
-      for (const id of noteIds) {
+      if (typeof contract.getNotesByAuthor === 'function') {
         try {
-          const noteData = await contractState.contract.notes(id);
-          const note: Note = {
-            id: Number(noteData.id),
-            title: noteData.title,
-            description: noteData.description,
-            ipfsHash: noteData.ipfsHash,
-            author: noteData.author,
-            price: ethers.formatEther(noteData.price),
-            forSale: noteData.forSale,
-            createdAt: Number(noteData.createdAt),
-            subject: noteData.subject,
-            rating: Number(noteData.rating),
-            ratingCount: Number(noteData.ratingCount),
-            totalRating: Number(noteData.totalRating),
-            downloadCount: Number(noteData.downloadCount),
-          };
-          notes.push(note);
-        } catch (error) {
-          console.warn(`Failed to fetch note ${id}:`, error);
+          const rawIds = await contract.getNotesByAuthor(address);
+          const noteIds = Array.from(rawIds).map((id: any) => BigInt(id.toString()));
+          if (noteIds.length > 0) {
+            const notes: Note[] = [];
+            for (const id of noteIds) {
+              try {
+                const noteData = await contract.notes(id);
+                notes.push(formatNoteFromContract(noteData, id));
+              } catch (error) {
+                console.warn(`Failed to fetch note ${id}:`, error);
+              }
+            }
+            return notes;
+          }
+        } catch (e) {
+          console.warn('getNotesByAuthor failed, falling back to filter:', e);
         }
       }
 
-      return notes;
+      const allNotes = await getAllNotes();
+      return allNotes.filter(
+        (n) => n.author && n.author.toLowerCase() === address.toLowerCase()
+      );
     } catch (error) {
-      throw error;
+      console.error('Failed to fetch user notes:', error);
+      return [];
     }
-  }, [contractState.contract, web3State.account]);
+  }, [contractState.contract, getReadContract, web3State.account, getAllNotes]);
 
   const getUserPurchases = useCallback(async (userAddress?: string): Promise<Note[]> => {
-    if (!contractState.contract) {
-      throw new Error('Contract not initialized');
+    const contract = contractState.contract || getReadContract();
+    if (!contract) {
+      throw new Error('Contract not available');
     }
 
     const address = userAddress || web3State.account;
     if (!address) {
-      throw new Error('No user address provided');
+      return [];
     }
 
     try {
-      const noteIds = await contractState.contract.getUserPurchases(address);
-      const notes: Note[] = [];
-
-      for (const id of noteIds) {
+      if (typeof contract.getUserPurchases === 'function') {
         try {
-          const noteData = await contractState.contract.notes(id);
-          const note: Note = {
-            id: Number(noteData.id),
-            title: noteData.title,
-            description: noteData.description,
-            ipfsHash: noteData.ipfsHash,
-            author: noteData.author,
-            price: ethers.formatEther(noteData.price),
-            forSale: noteData.forSale,
-            createdAt: Number(noteData.createdAt),
-            subject: noteData.subject,
-            rating: Number(noteData.rating),
-            ratingCount: Number(noteData.ratingCount),
-            totalRating: Number(noteData.totalRating),
-            downloadCount: Number(noteData.downloadCount),
-          };
-          notes.push(note);
-        } catch (error) {
-          console.warn(`Failed to fetch note ${id}:`, error);
+          const rawIds = await contract.getUserPurchases(address);
+          const noteIds = Array.from(rawIds).map((id: any) => BigInt(id.toString()));
+          if (noteIds.length > 0) {
+            const notes: Note[] = [];
+            for (const id of noteIds) {
+              try {
+                const noteData = await contract.notes(id);
+                notes.push(formatNoteFromContract(noteData, id));
+              } catch (error) {
+                console.warn(`Failed to fetch purchased note ${id}:`, error);
+              }
+            }
+            return notes;
+          }
+        } catch (e) {
+          console.warn('getUserPurchases call failed:', e);
         }
       }
 
-      return notes;
+      // Fallback: check each note against hasPurchased mapping
+      const allNotes = await getAllNotes();
+      const purchasedNotes: Note[] = [];
+      for (const note of allNotes) {
+        try {
+          const isBought = (typeof contract.hasPurchased === 'function')
+            ? await contract.hasPurchased(address, note.id)
+            : await contract.hasUserPurchased(address, note.id);
+          if (isBought) {
+            purchasedNotes.push(note);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      return purchasedNotes;
     } catch (error) {
-      throw error;
+      console.error('Failed to fetch user purchases:', error);
+      return [];
     }
-  }, [contractState.contract, web3State.account]);
+  }, [contractState.contract, getReadContract, web3State.account, getAllNotes]);
 
   const getAuthorEarnings = useCallback(async (address?: string): Promise<string> => {
-    if (!contractState.contract) {
-      throw new Error('Contract not initialized');
+    const contract = contractState.contract || getReadContract();
+    if (!contract) {
+      return '0';
     }
 
     const authorAddress = address || web3State.account;
     if (!authorAddress) {
-      throw new Error('No address provided');
+      return '0';
     }
 
     try {
-      const earnings = await contractState.contract.authorEarnings(authorAddress);
+      const earnings = await contract.authorEarnings(authorAddress);
       return ethers.formatEther(earnings);
     } catch (error) {
-      throw error;
+      console.error('Failed to fetch author earnings:', error);
+      return '0';
     }
-  }, [contractState.contract, web3State.account]);
+  }, [contractState.contract, getReadContract, web3State.account]);
 
-  const hasUserPurchased = useCallback(async (tokenId: number, userAddress?: string): Promise<boolean> => {
-    if (!contractState.contract) {
-      throw new Error('Contract not initialized');
+  const hasUserPurchased = useCallback(async (tokenId: number | string, userAddress?: string): Promise<boolean> => {
+    const contract = contractState.contract || getReadContract();
+    if (!contract) {
+      return false;
     }
 
     const address = userAddress || web3State.account;
@@ -447,23 +498,54 @@ export function useNotesContract() {
     }
 
     try {
-      return await contractState.contract.hasUserPurchased(address, tokenId);
+      if (typeof contract.hasPurchased === 'function') {
+        return await contract.hasPurchased(address, tokenId);
+      }
+      if (typeof contract.hasUserPurchased === 'function') {
+        return await contract.hasUserPurchased(address, tokenId);
+      }
+      return false;
     } catch (error) {
       console.warn('Failed to check purchase status:', error);
       return false;
     }
-  }, [contractState.contract, web3State.account]);
+  }, [contractState.contract, getReadContract, web3State.account]);
+
+  const getUserRating = useCallback(async (tokenId: number | string, userAddress?: string): Promise<number> => {
+    const contract = contractState.contract || getReadContract();
+    if (!contract) return 0;
+
+    const address = userAddress || web3State.account;
+    if (!address) return 0;
+
+    try {
+      if (typeof contract.userRatings === 'function') {
+        const rating = await contract.userRatings(tokenId, address);
+        return Number(rating);
+      }
+      if (typeof contract.getUserRating === 'function') {
+        const rating = await contract.getUserRating(address, tokenId);
+        return Number(rating);
+      }
+      return 0;
+    } catch (error) {
+      console.warn('Failed to check user rating:', error);
+      return 0;
+    }
+  }, [contractState.contract, getReadContract, web3State.account]);
 
   return {
     ...contractState,
     createNote,
     purchaseNote,
     rateNote,
+    getUserRating,
     updatePrice,
     updateSaleStatus,
     withdrawEarnings,
     getAllNotes,
     getUserNotes,
+    getMyNotes: getUserNotes,
     getUserPurchases,
     getAuthorEarnings,
     hasUserPurchased,

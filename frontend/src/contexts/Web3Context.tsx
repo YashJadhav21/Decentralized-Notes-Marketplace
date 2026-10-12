@@ -106,14 +106,28 @@ export function Web3Provider({ children }: { children: ReactNode }) {
     }
   };
 
-  const handleAccountsChanged = (accounts: string[]) => {
+  const handleAccountsChanged = async (accounts: string[]) => {
     if (accounts.length === 0) {
       disconnectWallet();
     } else {
-      dispatch({
-        type: 'SET_WEB3_STATE',
-        payload: { account: accounts[0] },
-      });
+      try {
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const balance = await provider.getBalance(accounts[0]);
+        dispatch({
+          type: 'SET_WEB3_STATE',
+          payload: { 
+            isConnected: true,
+            account: accounts[0],
+            balance: ethers.formatEther(balance)
+          },
+        });
+        await loadUserProfile(accounts[0]);
+      } catch (e) {
+        dispatch({
+          type: 'SET_WEB3_STATE',
+          payload: { isConnected: true, account: accounts[0] },
+        });
+      }
     }
   };
 

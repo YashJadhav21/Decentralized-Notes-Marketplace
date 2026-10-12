@@ -261,24 +261,4 @@
   }
 }
 
-/* Dark mode support */
-@media (prefers-color-scheme: dark) {
-  .ghost {
-    color: #D6D3D1;
-  }
-  
-  .ghost:hover:not(.disabled) {
-    background: #44403C;
-    color: #F5F5F4;
-  }
-  
-  .outline {
-    border-color: #91B1FF;
-    color: #91B1FF;
-  }
-  
-  .outline:hover:not(.disabled) {
-    background: #91B1FF;
-    color: #1C1917;
-  }
-}
+

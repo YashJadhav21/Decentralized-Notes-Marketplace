@@ -8,19 +8,17 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title NotesMarketplace
- * @dev A decentralized marketplace for trading study notes as NFTs
- * @notice This contract allows users to mint, buy, sell, and rate study notes
+ * @notice Decentralized Marketplace for trading study notes as NFTs on Ethereum Sepolia
  */
 contract NotesMarketplace is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard {
-    // State variables
     uint256 private _tokenIdCounter;
-    uint256 public platformFee = 250; // 2.5% platform fee (in basis points)
-    uint256 public constant MAX_PLATFORM_FEE = 1000; // Maximum 10% platform fee
+    uint256 public platformFee = 250; // 2.5% platform fee (250 / 10000)
+    uint256 public constant PLATFORM_FEE_BASIS_POINTS = 250;
+    uint256 public constant MAX_PLATFORM_FEE = 1000; // 10% maximum
     bool public paused = false;
 
-    // Structs
+    // Structs matching frontend exactly
     struct Note {
-        uint256 id;
         string title;
         string description;
         string ipfsHash;
@@ -55,55 +53,19 @@ contract NotesMarketplace is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard 
     mapping(address => uint256[]) public userPurchases;
 
     // Events
-    event NoteCreated(
-        uint256 indexed tokenId,
-        address indexed author,
-        string title,
-        string subject,
-        uint256 price,
-        string ipfsHash
-    );
-
-    event NotePurchased(
-        uint256 indexed tokenId,
-        address indexed buyer,
-        address indexed seller,
-        uint256 price
-    );
-
-    event NoteRated(
-        uint256 indexed tokenId,
-        address indexed rater,
-        uint8 rating
-    );
-
-    event PriceUpdated(
-        uint256 indexed tokenId,
-        uint256 oldPrice,
-        uint256 newPrice
-    );
-
-    event SaleStatusUpdated(
-        uint256 indexed tokenId,
-        bool forSale
-    );
-
-    event EarningsWithdrawn(
-        address indexed author,
-        uint256 amount
-    );
-
-    event PlatformFeeUpdated(
-        uint256 oldFee,
-        uint256 newFee
-    );
-
+    event NoteCreated(uint256 indexed tokenId, address indexed author, string title, string subject, uint256 price, string ipfsHash);
+    event NotePurchased(uint256 indexed tokenId, address indexed buyer, address indexed seller, uint256 price);
+    event NoteRated(uint256 indexed tokenId, address indexed rater, uint8 rating);
+    event PriceUpdated(uint256 indexed tokenId, uint256 oldPrice, uint256 newPrice);
+    event SaleStatusUpdated(uint256 indexed tokenId, bool forSale);
+    event EarningsWithdrawn(address indexed author, uint256 amount);
+    event PlatformFeeUpdated(uint256 oldFee, uint256 newFee);
     event ContractPaused(bool paused);
-
     event UserVerified(address indexed user);
 
     // Modifiers
     modifier onlyAuthor(uint256 tokenId) {
+        require(_ownerOf(tokenId) != address(0), "Note does not exist");
         require(notes[tokenId].author == msg.sender, "Not the author");
         _;
     }
@@ -128,23 +90,25 @@ contract NotesMarketplace is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard 
         _;
     }
 
-    constructor() ERC721("NotesMarketplace", "NOTES") Ownable(msg.sender) {}
+    constructor() ERC721("StudyNotesNFT", "NOTES") Ownable(msg.sender) {}
 
     /**
-     * @dev Creates a new note NFT
-     * @param title The title of the note
-     * @param description The description of the note
-     * @param ipfsHash The IPFS hash of the note file
-     * @param price The price of the note in Wei
-     * @param subject The subject category of the note
-     * @return tokenId The ID of the created note
+     * @notice Creates a new study note NFT
+     * @param title The title of the study note
+     * @param description Brief description of note content
+     * @param ipfsHash Pinata / IPFS CID of the note document
+     * @param price Price in wei for purchasing access
+     * @param subject Subject category (e.g. Computer Science)
+     * @param metadataURI Full IPFS metadata URI
+     * @return tokenId The newly minted note ID
      */
     function createNote(
         string memory title,
         string memory description,
         string memory ipfsHash,
         uint256 price,
-        string memory subject
+        string memory subject,
+        string memory metadataURI
     ) external notPaused validPrice(price) returns (uint256) {
         require(bytes(title).length > 0, "Title cannot be empty");
         require(bytes(description).length > 0, "Description cannot be empty");
@@ -154,40 +118,29 @@ contract NotesMarketplace is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard 
         uint256 tokenId = _tokenIdCounter;
         _tokenIdCounter++;
 
-        // Create the note
-        notes[tokenId] = Note({
-            id: tokenId,
-            title: title,
-            description: description,
-            ipfsHash: ipfsHash,
-            author: msg.sender,
-            price: price,
-            forSale: true,
-            createdAt: block.timestamp,
-            subject: subject,
-            rating: 0,
-            ratingCount: 0,
-            totalRating: 0,
-            downloadCount: 0
-        });
+        Note storage note = notes[tokenId];
+        note.title = title;
+        note.description = description;
+        note.ipfsHash = ipfsHash;
+        note.author = msg.sender;
+        note.price = price;
+        note.forSale = true;
+        note.createdAt = block.timestamp;
+        note.subject = subject;
 
-        // Update mappings
         authorNotes[msg.sender].push(tokenId);
         subjectNotes[subject].push(tokenId);
-
-        // Update user profile
         userProfiles[msg.sender].notesCreated++;
 
-        // Mint the NFT
         _safeMint(msg.sender, tokenId);
+        _setTokenURI(tokenId, metadataURI);
 
         emit NoteCreated(tokenId, msg.sender, title, subject, price, ipfsHash);
-
         return tokenId;
     }
 
     /**
-     * @dev Purchases a note NFT
+     * @notice Purchases access to a study note
      * @param tokenId The ID of the note to purchase
      */
     function purchaseNote(uint256 tokenId) 
@@ -206,29 +159,28 @@ contract NotesMarketplace is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard 
         address seller = note.author;
         uint256 salePrice = note.price;
 
-        // Calculate platform fee
         uint256 fee = (salePrice * platformFee) / 10000;
         uint256 authorPayment = salePrice - fee;
 
-        // Update state
         hasPurchased[msg.sender][tokenId] = true;
         userPurchases[msg.sender].push(tokenId);
         note.downloadCount++;
         authorEarnings[seller] += authorPayment;
         userProfiles[seller].totalEarnings += authorPayment;
 
-        // Handle excess payment
+        // Refund any excess payment
         if (msg.value > salePrice) {
-            payable(msg.sender).transfer(msg.value - salePrice);
+            (bool refundSent, ) = payable(msg.sender).call{value: msg.value - salePrice}("");
+            require(refundSent, "Refund failed");
         }
 
         emit NotePurchased(tokenId, msg.sender, seller, salePrice);
     }
 
     /**
-     * @dev Rates a purchased note
+     * @notice Rates a note
      * @param tokenId The ID of the note to rate
-     * @param rating The rating (1-5)
+     * @param rating Rating between 1 and 5
      */
     function rateNote(uint256 tokenId, uint8 rating) 
         external 
@@ -236,11 +188,10 @@ contract NotesMarketplace is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard 
         validRating(rating) 
     {
         require(hasPurchased[msg.sender][tokenId], "Must purchase note to rate");
+        require(msg.sender != notes[tokenId].author, "Cannot rate own note");
         require(userRatings[tokenId][msg.sender] == 0, "Already rated this note");
 
         Note storage note = notes[tokenId];
-        
-        // Update rating
         userRatings[tokenId][msg.sender] = rating;
         note.totalRating += rating;
         note.ratingCount++;
@@ -250,9 +201,9 @@ contract NotesMarketplace is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard 
     }
 
     /**
-     * @dev Updates the price of a note
+     * @notice Updates note price
      * @param tokenId The ID of the note
-     * @param newPrice The new price in Wei
+     * @param newPrice New price in wei
      */
     function updatePrice(uint256 tokenId, uint256 newPrice) 
         external 
@@ -261,153 +212,138 @@ contract NotesMarketplace is ERC721, ERC721URIStorage, Ownable, ReentrancyGuard 
     {
         uint256 oldPrice = notes[tokenId].price;
         notes[tokenId].price = newPrice;
-        
         emit PriceUpdated(tokenId, oldPrice, newPrice);
     }
 
     /**
-     * @dev Updates the sale status of a note
+     * @notice Updates sale status
      * @param tokenId The ID of the note
-     * @param forSale Whether the note is for sale
+     * @param forSale New sale status
      */
     function updateSaleStatus(uint256 tokenId, bool forSale) 
         external 
         onlyAuthor(tokenId) 
     {
         notes[tokenId].forSale = forSale;
-        
         emit SaleStatusUpdated(tokenId, forSale);
     }
 
     /**
-     * @dev Withdraws earnings for an author
+     * @notice Toggles sale status
+     * @param tokenId The ID of the note
+     */
+    function toggleSaleStatus(uint256 tokenId) 
+        external 
+        onlyAuthor(tokenId) 
+    {
+        notes[tokenId].forSale = !notes[tokenId].forSale;
+        emit SaleStatusUpdated(tokenId, notes[tokenId].forSale);
+    }
+
+    /**
+     * @notice Withdraws author earnings
      */
     function withdrawEarnings() external nonReentrant {
         uint256 earnings = authorEarnings[msg.sender];
         require(earnings > 0, "No earnings to withdraw");
 
         authorEarnings[msg.sender] = 0;
-        payable(msg.sender).transfer(earnings);
+        (bool sent, ) = payable(msg.sender).call{value: earnings}("");
+        require(sent, "Withdrawal failed");
 
         emit EarningsWithdrawn(msg.sender, earnings);
     }
 
-    /**
-     * @dev Gets all notes by an author
-     * @param author The author's address
-     * @return Array of note IDs
-     */
+    // View Functions
+    function getAllNotes() external view returns (uint256[] memory) {
+        uint256 total = _tokenIdCounter;
+        uint256[] memory ids = new uint256[](total);
+        for (uint256 i = 0; i < total; i++) {
+            ids[i] = i;
+        }
+        return ids;
+    }
+
+    function getMultipleNotes(uint256[] memory tokenIds) external view returns (Note[] memory) {
+        Note[] memory result = new Note[](tokenIds.length);
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            result[i] = notes[tokenIds[i]];
+        }
+        return result;
+    }
+
+    function getNoteDetails(uint256 tokenId) external view noteExists(tokenId) returns (Note memory) {
+        return notes[tokenId];
+    }
+
     function getNotesByAuthor(address author) external view returns (uint256[] memory) {
         return authorNotes[author];
     }
 
-    /**
-     * @dev Gets all notes in a subject
-     * @param subject The subject name
-     * @return Array of note IDs
-     */
     function getNotesBySubject(string memory subject) external view returns (uint256[] memory) {
         return subjectNotes[subject];
     }
 
-    /**
-     * @dev Gets user's purchased notes
-     * @param user The user's address
-     * @return Array of note IDs
-     */
     function getUserPurchases(address user) external view returns (uint256[] memory) {
         return userPurchases[user];
     }
 
-    /**
-     * @dev Gets the total number of notes
-     * @return The current token ID counter
-     */
     function getTotalNotes() external view returns (uint256) {
         return _tokenIdCounter;
     }
 
-    /**
-     * @dev Checks if a user has purchased a specific note
-     * @param user The user's address
-     * @param tokenId The note's token ID
-     * @return Whether the user has purchased the note
-     */
     function hasUserPurchased(address user, uint256 tokenId) external view returns (bool) {
         return hasPurchased[user][tokenId];
     }
 
-    // Admin Functions
+    function getUserRating(address user, uint256 tokenId) external view returns (uint8) {
+        return userRatings[tokenId][user];
+    }
 
-    /**
-     * @dev Updates the platform fee (only owner)
-     * @param newFee The new platform fee in basis points
-     */
+    // Admin Functions
     function updatePlatformFee(uint256 newFee) external onlyOwner {
         require(newFee <= MAX_PLATFORM_FEE, "Fee exceeds maximum");
         uint256 oldFee = platformFee;
         platformFee = newFee;
-        
         emit PlatformFeeUpdated(oldFee, newFee);
     }
 
-    /**
-     * @dev Pauses or unpauses the contract (only owner)
-     * @param _paused Whether to pause the contract
-     */
     function setPaused(bool _paused) external onlyOwner {
         paused = _paused;
         emit ContractPaused(_paused);
     }
 
-    /**
-     * @dev Verifies a user (only owner)
-     * @param user The user's address
-     */
     function verifyUser(address user) external onlyOwner {
         userProfiles[user].verified = true;
         emit UserVerified(user);
     }
 
-    /**
-     * @dev Withdraws platform fees (only owner)
-     */
     function withdrawPlatformFees() external onlyOwner nonReentrant {
         uint256 balance = address(this).balance;
         require(balance > 0, "No fees to withdraw");
-        
-        payable(owner()).transfer(balance);
+        (bool sent, ) = payable(owner()).call{value: balance}("");
+        require(sent, "Withdrawal failed");
     }
 
-    /**
-     * @dev Emergency withdrawal function (only owner)
-     */
     function emergencyWithdraw() external onlyOwner {
-        payable(owner()).transfer(address(this).balance);
+        uint256 balance = address(this).balance;
+        require(balance > 0, "No balance to withdraw");
+        (bool sent, ) = payable(owner()).call{value: balance}("");
+        require(sent, "Emergency withdrawal failed");
     }
 
-    // Override required functions
-    function tokenURI(uint256 tokenId) 
-        public 
-        view 
-        override(ERC721, ERC721URIStorage) 
-        returns (string memory) 
-    {
+    function tokenURI(uint256 tokenId) public view override(ERC721, ERC721URIStorage) returns (string memory) {
         require(_ownerOf(tokenId) != address(0), "Token does not exist");
-        
-        // Return IPFS hash as token URI
+        string memory _uri = super.tokenURI(tokenId);
+        if (bytes(_uri).length > 0) {
+            return _uri;
+        }
         return string(abi.encodePacked("ipfs://", notes[tokenId].ipfsHash));
     }
 
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(ERC721, ERC721URIStorage)
-        returns (bool)
-    {
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, ERC721URIStorage) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
 
-    // Receive function to accept Ether
     receive() external payable {}
 }
